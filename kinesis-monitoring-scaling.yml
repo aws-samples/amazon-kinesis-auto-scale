@@ -1,0 +1,52 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Creates advances dashboard, also scale Kinesis Data Stream and Kinesis Data Analytics application.
+
+Parameters:
+  FlinkApplicationName:
+      Description: "The Kinesis Analytics application to monitor the cloudwatch metrics in dashboard"
+      Type: "String"
+  KinesisStreamName:
+      Description: "The Kinesis stream name which is configured as input in Kinesis Analytics application"
+      Type: "String"
+  ShardCount:
+    Type: String
+    Description: Number of initial shards
+    Default: 8
+  DashboardName:
+      Description: "The CloudWatch dashboard name to create"
+      Type: "String"
+      Default: "KDAAdvancedMonitoringDashboard"
+
+Outputs:
+  CloudWatchDashboardURL:
+    Description: URL to access the CloudWatch advanced dasboard
+    Value: !GetAtt KinesisAdvancedDashboardStack.Outputs.CloudwatchDashboard
+  
+
+Resources:
+  
+  KinesisAdvancedDashboardStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kda-advanced-dashboard.yml
+      Parameters:
+        FlinkApplicationName: !Ref FlinkApplicationName
+        KinesisStreamName: !Ref KinesisStreamName
+        DashboardName: !Ref DashboardName
+
+  KinesisDataStreamScalingStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kds-scaling.yaml
+      Parameters:
+        MyKinesisStream: !Ref KinesisStreamName
+        ShardCount: !Ref ShardCount
+
+  KinesisDataAnalyticsScalingStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kda-scaling.yaml
+      Parameters:
+        KDAAppName: !Ref FlinkApplicationName
+        KinesisStreamName: !Ref KinesisStreamName
