@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Build pipeline to build the Flink Kinesis connector for the kinesis-analytics-taxi-consumer Flink application
+
+Parameters:
+  FlinkVersion:
+    Description: Flink version to build
+    Type: String
+    Default: 1.11.1
+
+  FlinkScalaVersion:
+    Description: Scala version for Flink
+    Type: String
+    Default: 2.11
+    AllowedPattern: \d\.\d\d
+
+  ArtifactBucket:
+    Type: String
+
+Outputs:
+  KinesisConnectorCopyCommand:
+    Description: AWS cli command to copy the flink kinesis connector
+    Value: !Sub aws s3 cp --recursive --exclude '*' --include 'flink-connector-kinesis-*.zip' 's3://${ArtifactBucket}/' .
+
+Resources:
+  BuildPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: ApacheFlinkSourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: "1"
+                Provider: S3
+              OutputArtifacts:
+                - Name: ApacheFlinkSource
+              Configuration:
+                S3Bucket: !Ref ArtifactBucket
+                S3ObjectKey: !Sub sources/flink-release-${FlinkVersion}.zip
+              RunOrder: 1
+        - Name: BuildKinesisConnector
+          Actions:
+            - Name: BuildFlinkKinesisConnector
+              InputArtifacts:
+                - Name: ApacheFlinkSource
+              OutputArtifacts:
+                - Name: FlinkKinesisConnectorOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: "1"
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref FlinkKinesisConnectorBuildProject
+              RunOrder: 1
+        - Name: Copy
+          Actions:
+            - Name: CopyFlinkKinesisConnector
+              InputArtifacts:
+                - Name: FlinkKinesisConnectorOutput
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: "1"
+                Provider: S3
+              Configuration:
+                BucketName: !Ref ArtifactBucket
+                Extract: false
+                ObjectKey: !Sub flink-connector-kinesis-${FlinkVersion}.zip
+              RunOrder: 1
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+
+
+  FlinkKinesisConnectorBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: aws/codebuild/java:openjdk-11
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+
+          phases:
+            build:
+              commands:
+                - cd flink-release-${FlinkVersion}
+                - mvn clean package -B -DskipTests -Dfast -Pinclude-kinesis -pl flink-connectors/flink-connector-kinesis
+            post_build:
+              commands:
+                - cd flink-connectors/flink-connector-kinesis/target
+                - mv dependency-reduced-pom.xml flink-connector-kinesis_${FlinkScalaVersion}-${FlinkVersion}.pom.xml
+
+          artifacts:
+            files:
+              - target/flink-connector-kinesis_${FlinkScalaVersion}-${FlinkVersion}.jar
+              - target/flink-connector-kinesis_${FlinkScalaVersion}-${FlinkVersion}.pom.xml
+            base-directory: flink-release-${FlinkVersion}/flink-connectors/flink-connector-kinesis
+            discard-paths: yes
+      TimeoutInMinutes: 5
+
+
+  DownloadSources:
+    Type: Custom::DownloadSources
+    Properties:
+      ServiceToken: !GetAtt DownloadSourcesFunction.Arn
+
+  DownloadSourcesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import cfnresponse
+          from urllib.request import urlopen
+
+          def handler(event, context):
+            s3 = boto3.client('s3')
+
+            flink_source = urlopen('https://github.com/apache/flink/archive/release-${FlinkVersion}.zip')
+            s3.put_object(Bucket='${ArtifactBucket}', Key='sources/flink-release-${FlinkVersion}.zip', Body=flink_source.read())
+
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+      Runtime: python3.7
+      Timeout: 60
+
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "codepipeline.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource:
+                  - !Sub arn:aws:s3:::${ArtifactBucket}
+                  - !Sub arn:aws:s3:::${ArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+              - Resource: 
+                  - !Sub ${FlinkKinesisConnectorBuildProject.Arn}
+                Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "codebuild.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource: 
+                  - arn:aws:logs:*:*:log-group:/aws/codebuild/*
+                  - arn:aws:logs:*:*:log-group:/aws/codebuild/*:log-stream:*
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+              - Resource: 
+                  - !Sub arn:aws:s3:::${ArtifactBucket}
+                  - !Sub arn:aws:s3:::${ArtifactBucket}/*
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Resource: "*"
+            Effect: Allow
+            Action:
+              - codepipeline:PutJobSuccessResult
+              - codepipeline:PutJobFailureResult
+          - Resource:
+              - arn:aws:logs:*:*:log-group:/aws/lambda/*
+              - arn:aws:logs:*:*:log-group:/aws/lambda/*:log-stream:*
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+          - Resource: 
+              - !Sub arn:aws:s3:::${ArtifactBucket}
+              - !Sub arn:aws:s3:::${ArtifactBucket}/*
+            Effect: Allow
+            Action:
+              - s3:PutObject

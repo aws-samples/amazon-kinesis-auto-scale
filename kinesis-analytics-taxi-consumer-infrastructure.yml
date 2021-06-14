@@ -1,0 +1,397 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Infrastructure to deploy and run the kinesis-analytics-taxi-consumer Flink application as a Kinesis Data Analytics for Java application
+
+Parameters:
+  SshKeyName:
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+
+  ClientIpAddressRange:
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: Must be a valid IP CIDR range of the form x.x.x.x/x.
+    Description: IP address range that is able to SSH into the EC2 instance and that gets full read and write access to the Elasticsearch Cluster and the Kibana dashboard
+    MaxLength: 18
+    MinLength: 9
+    Type: String
+
+  FlinkApplicationS3BucketArn:
+    Type: String
+
+  FlinkApplicationS3Path:
+    Type: String
+
+  KinesisReplayCopyCommand:
+    Type: String
+
+
+Outputs:
+  KinesisReplayInstance:
+    Description: The URL to the Session Management Console for this instance 
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/systems-manager/session-manager/${KinesisReplayInstance}?region=${AWS::Region}  
+
+  ProducerCommand:
+    Description: Command to populate Kinesis stream with taxi trip events
+    Value: !Sub cd;java -jar amazon-kinesis-replay-*.jar -streamName ${KinesisStream} -streamRegion ${AWS::Region} -aggregate -speedup 1800 -objectPrefix artifacts/kinesis-analytics-taxi-consumer/taxi-trips-partitioned.json.lz4/
+
+  KinesisStreamName:
+      Value: !Sub ${KinesisStream}
+
+  FlinkApplicationName:
+      Value: !Sub ${KinesisAnalyticsFlinkApplication}
+
+  ElasticsearchEndpoint:
+      Value: !Sub https://${ElasticsearchService.DomainEndpoint}
+
+  KibanaDashboardURL:
+    Description: URL to access the Kibana dasboard
+    Value: !Sub https://${ElasticsearchService.DomainEndpoint}/_plugin/kibana/app/kibana#/dashboard/nyc-tlc-dashboard
+
+Resources:
+  KinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      ShardCount: 8
+
+  KinesisAnalyticsFlinkApplication:
+    Type: AWS::KinesisAnalyticsV2::Application
+    Properties: 
+      RuntimeEnvironment: FLINK-1_11
+      ServiceExecutionRole: !Sub ${KinesisAnalyticsServiceRole.Arn}
+      ApplicationConfiguration:
+        ApplicationCodeConfiguration:
+          CodeContent:
+            S3ContentLocation:
+              BucketARN: !Ref FlinkApplicationS3BucketArn
+              FileKey: !Ref FlinkApplicationS3Path
+          CodeContentType: ZIPFILE
+        EnvironmentProperties:
+          PropertyGroups:
+            - PropertyGroupId: FlinkApplicationProperties
+              PropertyMap:
+                ElasticsearchEndpoint: !Sub https://${ElasticsearchService.DomainEndpoint}
+                EventTime: true
+                InputStreamName: !Sub ${KinesisStream}
+                Region: !Sub ${AWS::Region}
+        FlinkApplicationConfiguration:
+          MonitoringConfiguration:
+            ConfigurationType: CUSTOM
+            LogLevel: INFO
+            MetricsLevel: TASK
+        ApplicationSnapshotConfiguration:
+          SnapshotsEnabled: true
+
+
+  ElasticsearchService:
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      AccessPolicies:
+        !Sub |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "AWS": "*"
+                },
+                "Action": [
+                  "es:ESHttpGet",
+                  "es:ESHttpPut",
+                  "es:ESHttpPost",
+                  "es:ESHttpHead",
+                  "es:ESHttpDelete"
+                ],
+                "Resource": "*",
+                "Condition": {
+                  "IpAddress": {
+                    "aws:SourceIp": [
+                      "${ClientIpAddressRange}",
+                      "${KinesisReplayInstanceIp}"
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+      ElasticsearchClusterConfig:
+        InstanceCount: 1
+        InstanceType: m4.large.elasticsearch
+      EBSOptions:
+        EBSEnabled: true
+        VolumeSize: 20
+        VolumeType: gp2
+      ElasticsearchVersion: 6.7
+
+
+  FlinkNotProcessingFromKinesisAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-alarm
+      AlarmDescription: Alarm if Flink stops reading from the Kinesis stream or falls behind processing the available data
+      Namespace: AWS/KinesisAnalytics
+      MetricName: millisBehindLatest
+      Dimensions:
+        - Name: Id
+          Value: !Join ["_", !Split ["-", !Ref KinesisStream]]
+        - Name: Application
+          Value: !Sub ${KinesisAnalyticsFlinkApplication}
+        - Name: Flow
+          Value: Input
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 60000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: breaching
+
+  KinesisReplayInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId:
+        Fn::FindInMap:
+        - AWSRegionArch2AMI
+        - !Ref AWS::Region
+        - HVM64
+      Monitoring: true
+      InstanceType: c5.xlarge
+      IamInstanceProfile: !Ref KinesisReplayInstanceProfile
+      KeyName: !Ref SshKeyName
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: true
+        DeleteOnTermination: true
+        DeviceIndex: 0
+        GroupSet:
+          - !GetAtt KinesisReplayInstanceSecurityGroup.GroupId
+      Tags:
+      - Key: Application
+        Value: !Ref AWS::StackId
+      - Key: Name
+        Value: !Sub ${AWS::StackName}-producer-instance
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash -x
+            
+            yum update -y
+            yum install -y tmux
+
+            # install Java 11
+            amazon-linux-extras enable java-openjdk11
+            yum install -y java-11-openjdk
+
+            # wait until CF stack, in particular the EIP association, was created successfully
+            aws --region ${AWS::Region} cloudformation wait stack-create-complete --stack-name '${AWS::StackName}'
+
+            # create ES indices
+            curl -s https://raw.githubusercontent.com/aws-samples/amazon-kinesis-analytics-taxi-consumer/master/misc/trip-duration-index.json | curl -s -w "\n" -XPUT https://${ElasticsearchService.DomainEndpoint}/trip_duration -H "Content-Type: application/json" -d @-
+            curl -s https://raw.githubusercontent.com/aws-samples/amazon-kinesis-analytics-taxi-consumer/master/misc/pickup-count-index.json | curl -s -w "\n" -XPUT https://${ElasticsearchService.DomainEndpoint}/pickup_count -H "Content-Type: application/json" -d @-
+
+            # create Kinaba visualizations and dashboard
+            curl -s https://raw.githubusercontent.com/aws-samples/amazon-kinesis-analytics-taxi-consumer/master/misc/nyc-tlc-dashboard.json | curl -s -w "\n" -XPOST https://${ElasticsearchService.DomainEndpoint}/_plugin/kibana/api/saved_objects/_bulk_create -H 'Content-Type: application/json' -H 'kbn-xsrf: true' -d @-
+
+            # set default Kibana index pattern
+            curl -s -w "\n" -XPOST 'https://${ElasticsearchService.DomainEndpoint}/_plugin/kibana/api/kibana/settings' -H 'content-type: application/json' -H 'kbn-xsrf: true' --data '{"changes":{"defaultIndex":"trip-duration-index-pattern"}}'
+            
+            # # start the Flink application
+            
+            aws --region ${AWS::Region} kinesisanalyticsv2 start-application --application-name ${KinesisAnalyticsFlinkApplication} --run-configuration '{ "ApplicationRestoreConfiguration": { "ApplicationRestoreType": "RESTORE_FROM_LATEST_SNAPSHOT" } }'
+
+            # copy the replay Java app from s3
+            su ssm-user -l -c "${KinesisReplayCopyCommand}"
+            
+
+
+  Ec2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ ec2.amazonaws.com ]
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  KinesisReplayInstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub allow SSH access from ${ClientIpAddressRange}
+      SecurityGroupIngress:
+      - CidrIp: !Ref ClientIpAddressRange
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+
+  KinesisReplayInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - Ref: KinesisReplayRole
+
+  KinesisReplayInstanceIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  KinesisReplayInstanceIpAssiciation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref KinesisReplayInstance
+      AllocationId: !GetAtt KinesisReplayInstanceIp.AllocationId
+
+
+  KinesisReplayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Policies:
+        -
+          PolicyName: root
+          PolicyDocument:
+            !Sub |
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                          "kinesisanalytics:CreateApplication",
+                          "kinesisanalytics:StartApplication"
+                      ],
+                      "Resource": "arn:aws:kinesisanalytics:${AWS::Region}:${AWS::AccountId}:application/${KinesisAnalyticsFlinkApplication}"
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                          "kinesis:DescribeStream",
+                          "kinesis:ListShards",
+                          "kinesis:GetShardIterator",
+                          "kinesis:GetRecords",
+                          "kinesis:PutRecord",
+                          "kinesis:PutRecords"
+                      ],
+                      "Resource": "${KinesisStream.Arn}"
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                          "cloudwatch:PutMetricData"
+                      ],
+                      "Resource": "*"
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Action": "cloudformation:DescribeStacks",
+                      "Resource": "arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*"
+                  },
+                  {
+                      "Effect": "Allow",
+                      "Action": [
+                          "s3:GetObject",
+                          "s3:ListBucket"
+                      ],
+                      "Resource": [
+                        "${FlinkApplicationS3BucketArn}",
+                        "arn:aws:s3:::aws-bigdata-blog",
+                        "${FlinkApplicationS3BucketArn}/*",
+                        "arn:aws:s3:::aws-bigdata-blog/*"
+                      ]
+                  }
+                ]
+              }
+
+
+  KinesisAnalyticsServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": { "Service": [ "kinesisanalytics.amazonaws.com" ]},
+                "Action": [ "sts:AssumeRole" ]
+            }]
+        }
+      Policies:
+        -
+          PolicyName: root
+          PolicyDocument:
+            !Sub |
+              {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                      {
+                          "Effect": "Allow",
+                          "Action": [
+                              "s3:GetObject",
+                              "s3:GetObjectVersion"
+                          ],
+                          "Resource": [
+                              "${FlinkApplicationS3BucketArn}/*"
+                          ]
+                      },
+                      {
+                          "Effect": "Allow",
+                          "Action": [
+                              "logs:DescribeLogGroups"
+                          ],
+                          "Resource": [
+                              "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+                          ]
+                      },
+                      {
+                          "Effect": "Allow",
+                          "Action": [
+                              "logs:DescribeLogStreams",
+                              "logs:PutLogEvents"
+                          ],
+                          "Resource": [
+                              "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"                
+                          ]
+                      },
+                      {
+                          "Effect": "Allow",
+                          "Action": "kinesis:*",
+                          "Resource": "${KinesisStream.Arn}"                       
+                      },
+                      {
+                          "Effect": "Allow",
+                          "Action": [
+                            "es:ESHttpPut",
+                            "es:ESHttpPost",
+                            "es:ESHttpHead"
+                          ],
+                          "Resource": "${ElasticsearchService.Arn}/*"
+                      }
+                  ]
+              }
+
+Mappings:
+  AWSRegionArch2AMI:
+    eu-central-1:
+      HVM64: ami-0f3a43fbf2d3899f7
+    eu-west-1:
+      HVM64: ami-07683a44e80cd32c5
+    us-west-2:
+      HVM64: ami-061392db613a6357b
+    us-east-1:
+      HVM64: ami-0de53d8956e8dcf80
+    us-east-2:
+      HVM64: ami-02bcbb802e03574ba
