@@ -53,6 +53,10 @@ Resources:
     Type: AWS::Kinesis::Stream
     Properties:
       ShardCount: 8
+      StreamEncryption:
+        # KeyId: !GetAtt KMSKey.Arn
+        KeyId: alias/aws/kinesis
+        EncryptionType: KMS
 
   KinesisAnalyticsFlinkApplication:
     Type: AWS::KinesisAnalyticsV2::Application
