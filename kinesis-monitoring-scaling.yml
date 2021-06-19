@@ -29,7 +29,7 @@ Resources:
   KinesisAdvancedDashboardStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kda-advanced-dashboard.yml
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/kds-kpu-optimization/kda-advanced-dashboard.yml
       Parameters:
         FlinkApplicationName: !Ref FlinkApplicationName
         KinesisStreamName: !Ref KinesisStreamName
@@ -38,7 +38,7 @@ Resources:
   KinesisDataStreamScalingStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kds-scaling.yaml
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/kds-kpu-optimization/kds-scaling.yaml
       Parameters:
         MyKinesisStream: !Ref KinesisStreamName
         ShardCount: !Ref ShardCount
@@ -46,7 +46,7 @@ Resources:
   KinesisDataAnalyticsScalingStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kda-scaling.yaml
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/kds-kpu-optimization/kda-scaling.yaml
       Parameters:
         KDAAppName: !Ref FlinkApplicationName
         KinesisStreamName: !Ref KinesisStreamName

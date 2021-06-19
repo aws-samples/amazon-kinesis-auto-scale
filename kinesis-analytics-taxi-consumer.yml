@@ -65,7 +65,7 @@ Resources:
   KinesisReplayBuildStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kinesis-replay-build-pipeline.yml
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/kds-kpu-optimization/kinesis-replay-build-pipeline.yml
       Parameters:
         ExternalArtifactBucket: !Ref ArtifactBucket
 
@@ -73,21 +73,21 @@ Resources:
   FlinkKinesisConnectorBuildStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/flink-kinesis-connector-build-pipeline.yml
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/kds-kpu-optimization/flink-kinesis-connector-build-pipeline.yml
       Parameters:
         ArtifactBucket: !Ref ArtifactBucket
 
   TaxiConsumerBuildStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kinesis-analytics-taxi-consumer-build-pipeline.yml
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/kds-kpu-optimization/kinesis-analytics-taxi-consumer-build-pipeline.yml
       Parameters:
         ArtifactBucket: !Ref ArtifactBucket
 
   TaxiConsumerInfrastructure:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://kda-kpu-blog.s3.amazonaws.com/kinesis-analytics-taxi-consumer-infrastructure.yml
+      TemplateURL: https://aws-bigdata-blog.s3.amazonaws.com/artifacts/kds-kpu-optimization/kinesis-analytics-taxi-consumer-infrastructure.yml
       Parameters:
         KinesisReplayCopyCommand: !GetAtt KinesisReplayBuildStack.Outputs.KinesisReplayCopyCommand
         FlinkApplicationS3BucketArn: !GetAtt ArtifactBucket.Arn
@@ -100,4 +100,7 @@ Resources:
     Properties:
       VersioningConfiguration:
         Status: Enabled
-
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
