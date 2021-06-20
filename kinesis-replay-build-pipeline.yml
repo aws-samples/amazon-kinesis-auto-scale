@@ -37,8 +37,8 @@ Resources:
         Status: Enabled
       BucketEncryption: 
         ServerSideEncryptionConfiguration: 
-        - ServerSideEncryptionByDefault:
-            SSEAlgorithm: AES256
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
 
   BuildPipeline:
     Type: AWS::CodePipeline::Pipeline
