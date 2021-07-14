@@ -15,9 +15,9 @@ For this post, we analyze the telemetry data of a taxi fleet in New York City in
 
 Read more in AWS Channel:
 
-[Build and optimize a real-time stream processing pipeline with Amazon Kinesis Data Analytics for Apache Flink,Part 1](https://aws.amazon.com/blogs/big-data/part1-build-and-optimize-a-real-time-stream-processing-pipeline-with-amazon-kinesis-data-analytics-for-apache-flink/)
+[Build and optimize a real-time stream processing pipeline with Amazon Kinesis Data Analytics for Apache Flink, Part 1](https://aws.amazon.com/blogs/big-data/part1-build-and-optimize-a-real-time-stream-processing-pipeline-with-amazon-kinesis-data-analytics-for-apache-flink/)
 
-[Build and optimize real-time stream processing pipeline with Amazon Kinesis Data Analytics for Apache Flink,Part 2](https://aws.amazon.com/blogs/big-data/part2-build-and-optimize-real-time-stream-processing-pipeline-with-amazon-kinesis-data-analytics-for-apache-flink/)
+[Build and optimize real-time stream processing pipeline with Amazon Kinesis Data Analytics for Apache Flink, Part 2](https://aws.amazon.com/blogs/big-data/part2-build-and-optimize-real-time-stream-processing-pipeline-with-amazon-kinesis-data-analytics-for-apache-flink/)
 
 ## License Summary
 
